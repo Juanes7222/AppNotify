@@ -1,0 +1,158 @@
+{
+  "identity": {
+    "name": "E1",
+    "archetype": "The Anti-AI Designer",
+    "mission": "Create a 'Control Room' aesthetic that feels precise, professional, and slightly futuristic. Avoid generic SaaS flatness.",
+    "principles": [
+      "Fusion over Imitation: Mix 'Linear' precision with 'Spotify' moodiness.",
+      "Content is King: The 'Next Event' is the hero. Spotlight it.",
+      "Zoom In: Use drawers and slide-overs instead of page navigation to maintain context.",
+      "Negative Space: Don't cram the dashboard. Let the data breathe."
+    ]
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Manrope, sans-serif",
+      "body": "Inter, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "weights": {
+      "heading": "font-semibold or font-bold",
+      "body": "font-normal",
+      "accent": "font-medium"
+    },
+    "tracking": {
+      "heading": "tracking-tight",
+      "overline": "tracking-[0.2em] uppercase"
+    },
+    "instructions": "Import 'Manrope' from Google Fonts. Use it for all Headings (h1-h4). Use 'Inter' for body text. Use 'JetBrains Mono' for dates, IDs, and technical data."
+  },
+  "colors": {
+    "palette_name": "Electric Control Room",
+    "mode_strategy": "Dark Mode First (The 'Pro' View), Light Mode as 'Swiss' variant.",
+    "dark": {
+      "background": "#09090B",
+      "foreground": "#FAFAFA",
+      "card": "#121214",
+      "card_foreground": "#FAFAFA",
+      "primary": "#6366F1",
+      "primary_foreground": "#FFFFFF",
+      "secondary": "#27272A",
+      "secondary_foreground": "#FAFAFA",
+      "muted": "#27272A",
+      "muted_foreground": "#A1A1AA",
+      "accent": "#6366F1",
+      "accent_foreground": "#FFFFFF",
+      "border": "#27272A",
+      "input": "#27272A",
+      "ring": "#6366F1",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444"
+    },
+    "light": {
+      "background": "#FFFFFF",
+      "foreground": "#09090B",
+      "card": "#FFFFFF",
+      "card_foreground": "#09090B",
+      "primary": "#4F46E5",
+      "primary_foreground": "#FFFFFF",
+      "secondary": "#F4F4F5",
+      "secondary_foreground": "#18181B",
+      "muted": "#F4F4F5",
+      "muted_foreground": "#71717A",
+      "accent": "#EEF2FF",
+      "accent_foreground": "#4F46E5",
+      "border": "#E4E4E7",
+      "input": "#E4E4E7",
+      "ring": "#4F46E5",
+      "success": "#059669",
+      "warning": "#D97706",
+      "error": "#DC2626"
+    },
+    "usage_rules": [
+      "Never use pure black (#000000). Use #09090B.",
+      "Primary color is for ACTIONS only (Buttons, Active States).",
+      "Status colors (Green/Amber/Red) must be used for Event Status and Email Status.",
+      "Use 'muted-foreground' for secondary text to reduce visual noise."
+    ]
+  },
+  "layout": {
+    "grid_system": "The Bento Grid (Mode B)",
+    "spacing_scale": "Generous. Use p-6 or p-8 for cards. gap-6 for grids.",
+    "container_width": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+    "dashboard_structure": {
+      "hero": "col-span-full lg:col-span-8 row-span-2 (Next Event Countdown)",
+      "stats": "col-span-1 lg:col-span-4 row-span-1 (Quick Metrics)",
+      "list": "col-span-full lg:col-span-4 row-span-2 (Recent Activity / Notifications)"
+    },
+    "navigation": "Sidebar (Left) for Desktop, Bottom Bar or Hamburger for Mobile. Collapsible sidebar is preferred."
+  },
+  "components": {
+    "buttons": {
+      "style": "h-10 px-4 py-2 rounded-md font-medium transition-all active:scale-95",
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_15px_rgba(99,102,241,0.3)]",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+      "ghost": "hover:bg-accent hover:text-accent-foreground"
+    },
+    "cards": {
+      "style": "rounded-xl border border-border bg-card text-card-foreground shadow-sm",
+      "hover": "hover:border-primary/50 transition-colors duration-300"
+    },
+    "inputs": {
+      "style": "h-10 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+    },
+    "dialogs": {
+      "style": "rounded-xl border border-border bg-background shadow-lg sm:max-w-lg"
+    },
+    "tables": {
+      "style": "w-full caption-bottom text-sm",
+      "header": "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
+      "row": "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted"
+    },
+    "custom_components": [
+      {
+        "name": "EventCard",
+        "description": "A large, visual card for the 'Next Event'. Includes a countdown timer, large title, and 'Manage' button."
+      },
+      {
+        "name": "StatusBadge",
+        "description": "Pill-shaped badge for Event/Email status. Green=Sent, Amber=Pending, Red=Failed, Gray=Draft."
+      },
+      {
+        "name": "TimelineView",
+        "description": "A vertical list of events sorted by date, with a connecting line (visual timeline)."
+      }
+    ]
+  },
+  "motion": {
+    "library": "framer-motion",
+    "transitions": {
+      "default": "type: 'spring', stiffness: 300, damping: 30",
+      "page_load": "initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}"
+    },
+    "interactions": {
+      "hover": "scale: 1.02",
+      "tap": "scale: 0.98"
+    }
+  },
+  "assets": {
+    "images": {
+      "login_bg": "https://images.unsplash.com/photo-1698669993523-bcf101a925ef?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "empty_state_events": "https://images.unsplash.com/photo-1652498196597-6e92b2fec58f?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "team_placeholder": "https://images.unsplash.com/photo-1758691737182-d42aefd6dee8?crop=entropy&cs=srgb&fm=jpg&q=85"
+    },
+    "icons": "lucide-react"
+  },
+  "universal_guidelines": [
+    "Do NOT use gradients for text. Keep text solid and legible.",
+    "Do NOT use 'Inter' for Headings. Use 'Manrope'.",
+    "Ensure all interactive elements have 'data-testid'.",
+    "Use 'sonner' for toasts.",
+    "Use 'Sheet' (Side Drawer) for creating/editing events to keep context.",
+    "Dark mode is the default preference, but Light mode must be perfectly accessible.",
+    "For the 'History' page, use a dense table layout (Control Room style).",
+    "Login page should use the 'login_bg' image as a side panel or background overlay."
+  ],
+  "instructions_to_main_agent": "You are building a professional Event Management Dashboard. Focus on the 'Control Room' aesthetic. The user wants a dark theme preference. Use the provided colors and fonts strictly. Implement the 'Bento Grid' for the dashboard. Use 'Sheet' components for forms to avoid page reloads. Ensure the 'Next Event' is the visual hero of the dashboard."
+}
