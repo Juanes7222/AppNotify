@@ -21,7 +21,11 @@ load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(
+    mongo_url,
+    tls=True,
+    tlsAllowInvalidCertificates=True
+)
 db = client[os.environ['DB_NAME']]
 
 # Firebase verification URL
@@ -653,12 +657,16 @@ async def send_email(to_email: str, subject: str, body: str):
 
 async def process_pending_notifications():
     """Process and send pending notifications"""
-    now = datetime.now(timezone.utc)
-    
-    pending = await db.notifications.find({
-        "status": "pending",
-        "scheduled_at": {"$lte": now.isoformat()}
-    }, {"_id": 0}).to_list(100)
+    try:
+        now = datetime.now(timezone.utc)
+        
+        pending = await db.notifications.find({
+            "status": "pending",
+            "scheduled_at": {"$lte": now.isoformat()}
+        }, {"_id": 0}).to_list(100)
+    except Exception as e:
+        logger.error(f"Error fetching pending notifications: {e}")
+        return
     
     for notif in pending:
         try:
