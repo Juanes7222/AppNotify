@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 async def send_email(to_email: str, subject: str, body: str):
     """Send email via Gmail SMTP"""
+    
     smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
     smtp_port = int(os.environ.get('SMTP_PORT', '587'))
     smtp_user = os.environ.get('SMTP_USER', '')
@@ -27,6 +28,10 @@ async def send_email(to_email: str, subject: str, body: str):
     message.attach(MIMEText(body, 'html'))
     
     try:
+        # Port 465 uses SSL, port 587 uses STARTTLS
+        use_tls = smtp_port == 465
+        use_starttls = smtp_port == 587
+        
         await aiosmtplib.send(
             message,
             timeout=30,
@@ -34,11 +39,13 @@ async def send_email(to_email: str, subject: str, body: str):
             port=smtp_port,
             username=smtp_user,
             password=smtp_password,
-            start_tls=True
+            use_tls=use_tls,
+            start_tls=use_starttls
         )
+        logger.info(f"Email sent successfully to {to_email}")
         return True
     except Exception as e:
-        logger.error(f"Failed to send email: {e}")
+        logger.error(f"Failed to send email via port {smtp_port}: {e}")
         return False
 
 

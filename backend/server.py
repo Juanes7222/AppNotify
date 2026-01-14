@@ -37,7 +37,6 @@ db = client[os.environ['DB_NAME']]
 
 # Initialize scheduler (must be before lifespan)
 scheduler = AsyncIOScheduler()
-scheduler_running = False
 
 # Async wrapper for scheduler job
 async def process_notifications_job():
@@ -49,22 +48,27 @@ async def process_notifications_job():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global scheduler_running
     # Código de startup
-    if not scheduler_running:
-        scheduler.add_job(process_notifications_job, 'interval', minutes=1)
+    # Verificar si ya hay jobs programados (evitar duplicados en hot-reload)
+    if len(scheduler.get_jobs()) == 0:
+        scheduler.add_job(
+            process_notifications_job, 
+            'interval', 
+            minutes=1,
+            max_instances=1,  # Solo una instancia del job a la vez
+            coalesce=True,  # Si se perdió una ejecución, no ejecutar múltiples
+            id='process_notifications'  # ID único para el job
+        )
         scheduler.start()
-        scheduler_running = True
         logger.info("Notification scheduler started")
     else:
-        logger.warning("Scheduler already running, skipping initialization")
+        logger.warning(f"Scheduler already has {len(scheduler.get_jobs())} job(s), skipping initialization")
     
     yield
     
     # Código de shutdown
-    if scheduler_running:
+    if scheduler.running:
         scheduler.shutdown(wait=False)
-        scheduler_running = False
     client.close()
     logger.info("Scheduler and database connection closed")
 
