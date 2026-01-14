@@ -32,6 +32,9 @@ async def get_events(user_info: dict = Depends(verify_firebase_token)):
 
 @router.post("", response_model=dict)
 async def create_event(event_data: EventCreate, user_info: dict = Depends(verify_firebase_token)):
+    from models import Contact, Subscription
+    from utils import generate_notifications_for_subscription
+    
     db = get_db()
     user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
     if not user:
@@ -51,7 +54,43 @@ async def create_event(event_data: EventCreate, user_info: dict = Depends(verify
     
     # Remove _id if it was added by MongoDB
     event_dict.pop('_id', None)
-    event_dict["subscribers_count"] = 0
+    
+    # Auto-subscribe user as contact
+    # Check if user already exists as a contact
+    user_contact = await db.contacts.find_one({
+        "user_id": user["id"],
+        "email": user["email"]
+    }, {"_id": 0})
+    
+    if not user_contact:
+        # Create contact for the user
+        new_contact = Contact(
+            user_id=user["id"],
+            name=user.get("display_name") or user["email"].split("@")[0],
+            email=user["email"]
+        )
+        contact_dict = new_contact.model_dump()
+        contact_dict['created_at'] = contact_dict['created_at'].isoformat()
+        await db.contacts.insert_one(contact_dict)
+        contact_dict.pop('_id', None)
+        user_contact = contact_dict
+    
+    # Create subscription for the user
+    subscription = Subscription(
+        event_id=event_dict["id"],
+        contact_id=user_contact["id"],
+        user_id=user["id"]
+    )
+    
+    sub_dict = subscription.model_dump()
+    sub_dict['created_at'] = sub_dict['created_at'].isoformat()
+    await db.subscriptions.insert_one(sub_dict)
+    sub_dict.pop('_id', None)
+    
+    # Generate notifications for the user's subscription
+    await generate_notifications_for_subscription(event_dict, subscription, user["id"], db)
+    
+    event_dict["subscribers_count"] = 1
     return event_dict
 
 

@@ -21,6 +21,16 @@ async def get_contacts(user_info: dict = Depends(verify_firebase_token)):
         raise HTTPException(status_code=404, detail="User not found")
     
     contacts = await db.contacts.find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
+    
+    # Mark the user's own contact
+    for contact in contacts:
+        if contact["email"] == user["email"]:
+            contact["is_self"] = True
+            contact["display_name"] = "Tú"
+        else:
+            contact["is_self"] = False
+            contact["display_name"] = contact["name"]
+    
     return contacts
 
 

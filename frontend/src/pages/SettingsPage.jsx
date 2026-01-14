@@ -224,23 +224,7 @@ const SettingsPage = () => {
 
               <Separator />
 
-              <div className="p-4 rounded-lg bg-secondary/50">
-                <div className="flex items-start gap-3">
-                  <Info className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-medium text-amber-500">Configuración SMTP</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Para habilitar el envío de correos, configura las credenciales SMTP en el archivo .env del backend.
-                    </p>
-                    <ul className="text-xs text-muted-foreground mt-2 space-y-1">
-                      <li>• SMTP_HOST (ej: smtp.gmail.com)</li>
-                      <li>• SMTP_PORT (ej: 587)</li>
-                      <li>• SMTP_USER (tu correo)</li>
-                      <li>• SMTP_PASSWORD (contraseña de aplicación)</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
+              
 
               <div className="text-sm text-muted-foreground">
                 <p>El sistema envía recordatorios automáticamente según los intervalos que configures en cada evento.</p>
@@ -274,10 +258,6 @@ const SettingsPage = () => {
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Versión</span>
                   <span className="text-sm font-mono">1.0.0</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Stack</span>
-                  <span className="text-sm">React + FastAPI + MongoDB</span>
                 </div>
               </div>
 
