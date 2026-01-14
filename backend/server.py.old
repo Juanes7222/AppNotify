@@ -1,0 +1,1075 @@
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pathlib import Path
+from typing import List, Optional
+from datetime import datetime, timezone, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from models import User, Contact, ContactCreate, Event, EventCreate, EventUpdate, ReminderInterval, Subscription, SubscriptionCreate, DashboardStats, Notification
+import logging
+import os
+import aiosmtplib
+import httpx
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+# MongoDB connection
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(
+    mongo_url,
+    tls=True,
+    tlsAllowInvalidCertificates=True
+)
+db = client[os.environ['DB_NAME']]
+
+# Firebase verification URL
+FIREBASE_VERIFY_URL = "https://www.googleapis.com/identitytoolkit/v3/relyingparty/getAccountInfo"
+
+# Create the main app
+app = FastAPI(title="Event Reminder System")
+
+# Create a router with the /api prefix
+api_router = APIRouter(prefix="/api")
+
+# Security
+security = HTTPBearer(auto_error=False)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+
+async def verify_firebase_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="No authentication token provided")
+    
+    token = credentials.credentials
+    firebase_api_key = os.environ.get('FIREBASE_API_KEY', '')
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{FIREBASE_VERIFY_URL}?key={firebase_api_key}",
+                json={"idToken": token}
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid authentication token")
+            
+            data = response.json()
+            if "users" not in data or len(data["users"]) == 0:
+                raise HTTPException(status_code=401, detail="User not found")
+            
+            user_info = data["users"][0]
+            return {
+                "uid": user_info.get("localId"),
+                "email": user_info.get("email"),
+                "display_name": user_info.get("displayName"),
+                "photo_url": user_info.get("photoUrl")
+            }
+    except httpx.RequestError:
+        raise HTTPException(status_code=401, detail="Failed to verify token")
+
+async def get_or_create_user(user_info: dict) -> dict:
+    existing_user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    
+    if existing_user:
+        return existing_user
+    
+    new_user = User(
+        firebase_uid=user_info["uid"],
+        email=user_info["email"],
+        display_name=user_info.get("display_name"),
+        photo_url=user_info.get("photo_url")
+    )
+    
+    user_dict = new_user.model_dump()
+    user_dict['created_at'] = user_dict['created_at'].isoformat()
+    
+    await db.users.insert_one(user_dict)
+    
+    # Remove _id if it was added by MongoDB
+    user_dict.pop('_id', None)
+    return user_dict
+
+# ===================== ROUTES =====================
+
+@api_router.get("/")
+async def root():
+    return {"message": "Event Reminder System API"}
+
+@api_router.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+# Auth routes
+@api_router.post("/auth/verify")
+async def verify_token(user_info: dict = Depends(verify_firebase_token)):
+    user = await get_or_create_user(user_info)
+    return {"user": user, "message": "Authentication successful"}
+
+@api_router.get("/auth/me")
+async def get_current_user(user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+# Dashboard routes
+@api_router.get("/dashboard/stats", response_model=DashboardStats)
+async def get_dashboard_stats(user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = user["id"]
+    now = datetime.now(timezone.utc)
+    
+    total_events = await db.events.count_documents({"user_id": user_id})
+    upcoming_events = await db.events.count_documents({
+        "user_id": user_id,
+        "event_date": {"$gte": now.isoformat()}
+    })
+    total_contacts = await db.contacts.count_documents({"user_id": user_id})
+    pending_notifications = await db.notifications.count_documents({
+        "user_id": user_id,
+        "status": "pending"
+    })
+    sent_notifications = await db.notifications.count_documents({
+        "user_id": user_id,
+        "status": "sent"
+    })
+    
+    return DashboardStats(
+        total_events=total_events,
+        upcoming_events=upcoming_events,
+        total_contacts=total_contacts,
+        pending_notifications=pending_notifications,
+        sent_notifications=sent_notifications
+    )
+
+@api_router.get("/dashboard/next-event")
+async def get_next_event(user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    now = datetime.now(timezone.utc)
+    event = await db.events.find_one(
+        {"user_id": user["id"], "event_date": {"$gte": now.isoformat()}},
+        {"_id": 0},
+        sort=[("event_date", 1)]
+    )
+    
+    if event:
+        subscribers_count = await db.subscriptions.count_documents({"event_id": event["id"]})
+        event["subscribers_count"] = subscribers_count
+    
+    return event
+
+@api_router.get("/dashboard/recent-activity")
+async def get_recent_activity(user_info: dict = Depends(verify_firebase_token), limit: int = 10):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    notifications = await db.notifications.find(
+        {"user_id": user["id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    # Enrich with event and contact info
+    enriched = []
+    for notif in notifications:
+        event = await db.events.find_one({"id": notif["event_id"]}, {"_id": 0})
+        contact = await db.contacts.find_one({"id": notif["contact_id"]}, {"_id": 0})
+        enriched.append({
+            **notif,
+            "event_title": event["title"] if event else "Unknown Event",
+            "contact_name": contact["name"] if contact else "Unknown Contact",
+            "contact_email": contact["email"] if contact else ""
+        })
+    
+    return enriched
+
+# Contact routes
+@api_router.get("/contacts", response_model=List[dict])
+async def get_contacts(user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    contacts = await db.contacts.find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
+    return contacts
+
+@api_router.post("/contacts", response_model=dict)
+async def create_contact(contact_data: ContactCreate, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    contact = Contact(
+        user_id=user["id"],
+        **contact_data.model_dump()
+    )
+    
+    contact_dict = contact.model_dump()
+    contact_dict['created_at'] = contact_dict['created_at'].isoformat()
+    
+    await db.contacts.insert_one(contact_dict)
+    
+    # Remove _id if it was added by MongoDB
+    contact_dict.pop('_id', None)
+    return contact_dict
+
+@api_router.get("/contacts/{contact_id}", response_model=dict)
+async def get_contact(contact_id: str, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    contact = await db.contacts.find_one({"id": contact_id, "user_id": user["id"]}, {"_id": 0})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    return contact
+
+@api_router.put("/contacts/{contact_id}", response_model=dict)
+async def update_contact(contact_id: str, contact_data: ContactCreate, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    contact = await db.contacts.find_one({"id": contact_id, "user_id": user["id"]}, {"_id": 0})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    update_data = contact_data.model_dump()
+    await db.contacts.update_one({"id": contact_id}, {"$set": update_data})
+    
+    updated_contact = await db.contacts.find_one({"id": contact_id}, {"_id": 0})
+    return updated_contact
+
+@api_router.delete("/contacts/{contact_id}")
+async def delete_contact(contact_id: str, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    result = await db.contacts.delete_one({"id": contact_id, "user_id": user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    # Delete related subscriptions and notifications
+    await db.subscriptions.delete_many({"contact_id": contact_id})
+    await db.notifications.delete_many({"contact_id": contact_id})
+    
+    return {"message": "Contact deleted successfully"}
+
+# Event routes
+@api_router.get("/events", response_model=List[dict])
+async def get_events(user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    events = await db.events.find({"user_id": user["id"]}, {"_id": 0}).sort("event_date", 1).to_list(1000)
+    
+    # Add subscriber count to each event
+    for event in events:
+        event["subscribers_count"] = await db.subscriptions.count_documents({"event_id": event["id"]})
+    
+    return events
+
+@api_router.post("/events", response_model=dict)
+async def create_event(event_data: EventCreate, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    event = Event(
+        user_id=user["id"],
+        **event_data.model_dump()
+    )
+    
+    event_dict = event.model_dump()
+    event_dict['event_date'] = event_dict['event_date'].isoformat()
+    event_dict['created_at'] = event_dict['created_at'].isoformat()
+    event_dict['updated_at'] = event_dict['updated_at'].isoformat()
+    
+    await db.events.insert_one(event_dict)
+    
+    # Remove _id if it was added by MongoDB
+    event_dict.pop('_id', None)
+    event_dict["subscribers_count"] = 0
+    return event_dict
+
+@api_router.get("/events/{event_id}", response_model=dict)
+async def get_event(event_id: str, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    event = await db.events.find_one({"id": event_id, "user_id": user["id"]}, {"_id": 0})
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    event["subscribers_count"] = await db.subscriptions.count_documents({"event_id": event_id})
+    return event
+
+@api_router.put("/events/{event_id}", response_model=dict)
+async def update_event(event_id: str, event_data: EventUpdate, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    event = await db.events.find_one({"id": event_id, "user_id": user["id"]}, {"_id": 0})
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    update_data = {k: v for k, v in event_data.model_dump().items() if v is not None}
+    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    
+    if 'event_date' in update_data:
+        update_data['event_date'] = update_data['event_date'].isoformat()
+        # Regenerate notifications if date changed
+        await regenerate_notifications(event_id, user["id"])
+    
+    await db.events.update_one({"id": event_id}, {"$set": update_data})
+    
+    updated_event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    updated_event["subscribers_count"] = await db.subscriptions.count_documents({"event_id": event_id})
+    return updated_event
+
+@api_router.delete("/events/{event_id}")
+async def delete_event(event_id: str, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    result = await db.events.delete_one({"id": event_id, "user_id": user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Delete related subscriptions and notifications
+    await db.subscriptions.delete_many({"event_id": event_id})
+    await db.notifications.delete_many({"event_id": event_id})
+    
+    return {"message": "Event deleted successfully"}
+
+# Subscription routes
+@api_router.get("/events/{event_id}/subscriptions", response_model=List[dict])
+async def get_event_subscriptions(event_id: str, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    event = await db.events.find_one({"id": event_id, "user_id": user["id"]}, {"_id": 0})
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    subscriptions = await db.subscriptions.find({"event_id": event_id}, {"_id": 0}).to_list(1000)
+    
+    # Enrich with contact info
+    enriched = []
+    for sub in subscriptions:
+        contact = await db.contacts.find_one({"id": sub["contact_id"]}, {"_id": 0})
+        if contact:
+            enriched.append({**sub, "contact": contact})
+    
+    return enriched
+
+@api_router.post("/events/{event_id}/subscriptions", response_model=dict)
+async def add_subscription(event_id: str, sub_data: SubscriptionCreate, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    event = await db.events.find_one({"id": event_id, "user_id": user["id"]}, {"_id": 0})
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    contact = await db.contacts.find_one({"id": sub_data.contact_id, "user_id": user["id"]}, {"_id": 0})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    # Check if subscription already exists
+    existing = await db.subscriptions.find_one({
+        "event_id": event_id,
+        "contact_id": sub_data.contact_id
+    }, {"_id": 0})
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="Contact already subscribed to this event")
+    
+    subscription = Subscription(
+        event_id=event_id,
+        contact_id=sub_data.contact_id,
+        user_id=user["id"]
+    )
+    
+    sub_dict = subscription.model_dump()
+    sub_dict['created_at'] = sub_dict['created_at'].isoformat()
+    
+    await db.subscriptions.insert_one(sub_dict)
+    
+    # Remove _id if it was added by MongoDB
+    sub_dict.pop('_id', None)
+    
+    # Generate notifications for this subscription
+    await generate_notifications_for_subscription(event, subscription, user["id"])
+    
+    return {**sub_dict, "contact": contact}
+
+@api_router.delete("/events/{event_id}/subscriptions/{subscription_id}")
+async def remove_subscription(event_id: str, subscription_id: str, user_info: dict = Depends(verify_firebase_token)):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    result = await db.subscriptions.delete_one({
+        "id": subscription_id,
+        "event_id": event_id,
+        "user_id": user["id"]
+    })
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    
+    # Delete related notifications
+    await db.notifications.delete_many({"subscription_id": subscription_id})
+    
+    return {"message": "Subscription removed successfully"}
+
+# Notification routes
+@api_router.post("/notifications/{notification_id}/send-test")
+async def send_test_notification(notification_id: str, user_info: dict = Depends(verify_firebase_token)):
+    """Send a notification immediately for testing purposes"""
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    notif = await db.notifications.find_one({
+        "id": notification_id,
+        "user_id": user["id"]
+    }, {"_id": 0})
+    
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    
+    if notif["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Can only send pending notifications")
+    
+    # Get event and contact info
+    event = await db.events.find_one({"id": notif["event_id"]}, {"_id": 0})
+    contact = await db.contacts.find_one({"id": notif["contact_id"]}, {"_id": 0})
+    
+    if not event or not contact:
+        raise HTTPException(status_code=404, detail="Event or contact not found")
+    
+    try:
+        # Parse event date
+        event_date = event['event_date']
+        if isinstance(event_date, str):
+            event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+        
+        # Format date in Spanish
+        months_es = {
+            'January': 'Enero', 'February': 'Febrero', 'March': 'Marzo', 'April': 'Abril',
+            'May': 'Mayo', 'June': 'Junio', 'July': 'Julio', 'August': 'Agosto',
+            'September': 'Septiembre', 'October': 'Octubre', 'November': 'Noviembre', 'December': 'Diciembre'
+        }
+        formatted_date_en = event_date.strftime("%d de %B de %Y")
+        formatted_date = formatted_date_en
+        for en, es in months_es.items():
+            formatted_date = formatted_date.replace(en, es)
+        
+        # Format time in 12-hour format
+        hour = event_date.hour
+        minute = event_date.minute
+        am_pm = 'AM' if hour < 12 else 'PM'
+        hour_12 = hour if hour <= 12 else hour - 12
+        hour_12 = 12 if hour_12 == 0 else hour_12
+        formatted_time = f"{hour_12}:{minute:02d} {am_pm}"
+        
+        # Prepare email
+        subject = f"[PRUEBA] Recordatorio: {event['title']}"
+        body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; background: #f3f4f6; }}
+                .container {{ max-width: 600px; margin: 40px auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border-top: 4px solid #f59e0b; }}
+                .header {{ background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 40px 30px; text-align: center; }}
+                .header-badge {{ display: inline-block; background: rgba(255,255,255,0.2); color: white; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 0.5px; }}
+                .header h1 {{ color: white; font-size: 24px; font-weight: 600; margin: 0; }}
+                .content {{ padding: 40px 30px; }}
+                .event-card {{ background: linear-gradient(to bottom, #fef3c7 0%, #fef9e3 100%); border: 2px solid #fbbf24; border-radius: 12px; padding: 25px; margin: 25px 0; }}
+                .event-title {{ color: #78350f; font-size: 22px; font-weight: 600; margin-bottom: 20px; }}
+                .event-detail {{ display: flex; align-items: center; margin: 12px 0; padding: 12px; background: white; border-radius: 8px; }}
+                .detail-icon {{ width: 36px; height: 36px; background: #fef3c7; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-right: 12px; }}
+                .detail-content {{ color: #1f2937; font-size: 14px; }}
+                .detail-content strong {{ display: block; color: #92400e; font-size: 12px; margin-bottom: 2px; }}
+                .warning-box {{ background: #fffbeb; border: 2px dashed #f59e0b; border-radius: 8px; padding: 20px; margin: 25px 0; text-align: center; }}
+                .warning-box p {{ color: #92400e; font-size: 13px; font-weight: 500; margin: 0; }}
+                .footer {{ background: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb; }}
+                .footer p {{ color: #6b7280; font-size: 12px; margin: 0; }}
+            </style>
+        </head>
+        <body>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background: #f3f4f6; padding: 20px;">
+                <tr>
+                    <td align="center">
+                        <div class="container">
+                            <div class="header">
+                                <div class="header-badge">Modo Prueba</div>
+                                <h1>Recordatorio de Evento</h1>
+                            </div>
+                            <div class="content">
+                                <p style="color: #374151; font-size: 16px; margin-bottom: 20px;">Hola <strong>{contact['name']}</strong>,</p>
+                                <p style="color: #4b5563; font-size: 14px; margin-bottom: 20px;">Este es un recordatorio de prueba para el siguiente evento:</p>
+                                
+                                <div class="event-card">
+                                    <div class="event-title">{event['title']}</div>
+                                    
+                                    <div class="event-detail">
+                                        <div class="detail-icon" style="font-size: 20px; color: #f59e0b;">📅</div>
+                                        <div class="detail-content">
+                                            <strong>FECHA</strong>
+                                            {formatted_date}
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="event-detail">
+                                        <div class="detail-icon" style="font-size: 20px; color: #f59e0b;">🕐</div>
+                                        <div class="detail-content">
+                                            <strong>HORA</strong>
+                                            {formatted_time}
+                                        </div>
+                                    </div>
+                                    
+                                    {f'''<div class="event-detail">
+                                        <div class="detail-icon" style="font-size: 20px; color: #f59e0b;">📍</div>
+                                        <div class="detail-content">
+                                            <strong>UBICACIÓN</strong>
+                                            {event['location']}
+                                        </div>
+                                    </div>''' if event.get('location') else ''}
+                                    
+                                    {f'<div style="margin-top: 15px; padding: 12px; background: white; border-radius: 8px;"><strong style="color: #92400e; font-size: 12px;">DESCRIPCIÓN</strong><p style="color: #4b5563; font-size: 14px; margin: 8px 0 0 0;">{event["description"]}</p></div>' if event.get('description') else ''}
+                                </div>
+                                
+                                <div class="warning-box">
+                                    <p>Este es un correo de prueba enviado manualmente.</p>
+                                    <p style="margin-top: 5px; font-size: 12px; color: #b45309;">Los recordatorios reales se enviarán automáticamente según la configuración del evento.</p>
+                                </div>
+                            </div>
+                            <div class="footer">
+                                <p>Correo de prueba generado por <strong>RemindSender</strong></p>
+                                <p style="margin-top: 8px;">Sistema de gestión de eventos y notificaciones</p>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+        
+        # Send email
+        success = await send_email(contact['email'], subject, body)
+        
+        if success:
+            await db.notifications.update_one(
+                {"id": notification_id},
+                {"$set": {
+                    "status": "sent",
+                    "sent_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+            return {"message": "Test notification sent successfully", "email": contact['email']}
+        else:
+            return {"message": "Failed to send test notification", "email": contact['email']}
+            
+    except Exception as e:
+        logger.error(f"Error sending test notification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/notifications", response_model=List[dict])
+async def get_notifications(
+    user_info: dict = Depends(verify_firebase_token),
+    status: Optional[str] = None,
+    limit: int = 100
+):
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    query = {"user_id": user["id"]}
+    if status:
+        query["status"] = status
+    
+    notifications = await db.notifications.find(query, {"_id": 0}).sort("scheduled_at", -1).to_list(limit)
+    
+    # Enrich with event and contact info
+    enriched = []
+    for notif in notifications:
+        event = await db.events.find_one({"id": notif["event_id"]}, {"_id": 0})
+        contact = await db.contacts.find_one({"id": notif["contact_id"]}, {"_id": 0})
+        enriched.append({
+            **notif,
+            "event_title": event["title"] if event else "Unknown Event",
+            "event_date": event["event_date"] if event else None,
+            "contact_name": contact["name"] if contact else "Unknown Contact",
+            "contact_email": contact["email"] if contact else ""
+        })
+    
+    return enriched
+
+@api_router.post("/test-email")
+async def test_email(user_info: dict = Depends(verify_firebase_token)):
+    """Send a test email to verify SMTP configuration"""
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        subject = "Correo de Prueba - RemindSender"
+        body = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; background: #f3f4f6; }}
+                .container {{ max-width: 600px; margin: 40px auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
+                .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center; }}
+                .header-icon {{ width: 64px; height: 64px; margin: 0 auto 20px; background: rgba(255,255,255,0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; }}
+                .header h1 {{ color: white; font-size: 24px; font-weight: 600; margin: 0; }}
+                .header p {{ color: rgba(255,255,255,0.9); font-size: 14px; margin-top: 8px; }}
+                .content {{ padding: 40px 30px; }}
+                .success-box {{ background: #f0fdf4; border: 2px solid #10b981; border-radius: 8px; padding: 20px; margin-bottom: 30px; }}
+                .success-box h2 {{ color: #047857; font-size: 18px; margin-bottom: 10px; }}
+                .success-box p {{ color: #065f46; font-size: 14px; }}
+                .info-table {{ width: 100%; border-collapse: collapse; margin: 25px 0; }}
+                .info-table td {{ padding: 12px 0; border-bottom: 1px solid #e5e7eb; font-size: 14px; }}
+                .info-table td:first-child {{ color: #6b7280; font-weight: 500; width: 120px; }}
+                .info-table td:last-child {{ color: #1f2937; }}
+                .info-table tr:last-child td {{ border-bottom: none; }}
+                .footer {{ background: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb; }}
+                .footer p {{ color: #6b7280; font-size: 12px; margin: 0; }}
+                .badge {{ display: inline-block; background: #dbeafe; color: #1e40af; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; }}
+            </style>
+        </head>
+        <body>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background: #f3f4f6; padding: 20px;">
+                <tr>
+                    <td align="center">
+                        <div class="container">
+                            <div class="header">
+                                <div class="header-icon">
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                                        <path d="M9 11l3 3L22 4"></path>
+                                        <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"></path>
+                                    </svg>
+                                </div>
+                                <h1>Sistema de Correos Funcionando</h1>
+                                <p>Verificación exitosa de configuración SMTP</p>
+                            </div>
+                            <div class="content">
+                                <div class="success-box">
+                                    <h2>Prueba Exitosa</h2>
+                                    <p>Si estás leyendo este correo, significa que la configuración SMTP está funcionando correctamente y el sistema puede enviar notificaciones automáticas.</p>
+                                </div>
+                                <p style="color: #374151; font-size: 14px; margin-bottom: 15px;"><strong>Detalles de la Prueba:</strong></p>
+                                <table class="info-table">
+                                    <tr>
+                                        <td>Usuario</td>
+                                        <td><strong>{}</strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Correo</td>
+                                        <td>{}</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Fecha y Hora</td>
+                                        <td>{}</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Estado</td>
+                                        <td><span class="badge">Operativo</span></td>
+                                    </tr>
+                                </table>
+                            </div>
+                            <div class="footer">
+                                <p>Este es un correo de prueba enviado desde <strong>RemindSender</strong></p>
+                                <p style="margin-top: 8px;">Sistema de gestión de eventos y recordatorios automáticos</p>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """.format(
+            user.get('display_name', 'Usuario de prueba'),
+            user['email'],
+            datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+        )
+        
+        success = await send_email(user['email'], subject, body)
+        
+        if success:
+            return {
+                "success": True,
+                "message": f"Correo de prueba enviado exitosamente a {user['email']}",
+                "email": user['email']
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send test email")
+            
+    except Exception as e:
+        logger.error(f"Error sending test email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===================== HELPER FUNCTIONS =====================
+
+def calculate_notification_time(event_date: datetime, interval: ReminderInterval) -> datetime:
+    """Calculate when a notification should be sent based on event date and interval"""
+    if isinstance(event_date, str):
+        event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+    
+    # Ensure event_date has timezone info (assume UTC if naive)
+    if event_date.tzinfo is None:
+        event_date = event_date.replace(tzinfo=timezone.utc)
+    
+    # Handle custom date reminders
+    if interval.unit == 'custom' and interval.custom_date:
+        scheduled = interval.custom_date
+        if isinstance(scheduled, str):
+            scheduled = datetime.fromisoformat(scheduled.replace('Z', '+00:00'))
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=timezone.utc)
+        return scheduled
+    
+    # Handle interval-based reminders
+    if interval.unit == 'minutes':
+        scheduled = event_date - timedelta(minutes=interval.value)
+    elif interval.unit == 'hours':
+        scheduled = event_date - timedelta(hours=interval.value)
+    elif interval.unit == 'days':
+        scheduled = event_date - timedelta(days=interval.value)
+    elif interval.unit == 'weeks':
+        scheduled = event_date - timedelta(weeks=interval.value)
+    else:
+        scheduled = event_date
+    
+    # Ensure result has UTC timezone
+    if scheduled.tzinfo is None:
+        scheduled = scheduled.replace(tzinfo=timezone.utc)
+    
+    return scheduled
+
+async def generate_notifications_for_subscription(event: dict, subscription: Subscription, user_id: str):
+    """Generate notification documents for a new subscription"""
+    logger.info(f"Generating notifications for event {event['id']}, subscription {subscription.id}")
+    
+    event_date = event['event_date']
+    if isinstance(event_date, str):
+        event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+    
+    logger.info(f"Event date: {event_date}, Reminder intervals: {event.get('reminder_intervals', [])}")
+    
+    notification_count = 0
+    for interval in event.get('reminder_intervals', []):
+        interval_obj = ReminderInterval(**interval) if isinstance(interval, dict) else interval
+        scheduled_at = calculate_notification_time(event_date, interval_obj)
+        
+        logger.info(f"Calculated scheduled_at: {scheduled_at}, Current time: {datetime.now(timezone.utc)}")
+        
+        # Only create notification if it's in the future or very close (within 2 minutes)
+        now = datetime.now(timezone.utc)
+        time_until_notification = (scheduled_at - now).total_seconds()
+        
+        # Allow notifications scheduled for now or up to 2 minutes in the future
+        # Also allow notifications up to 1 minute in the past (in case of processing delays)
+        if time_until_notification >= -60:
+            notification = Notification(
+                event_id=event['id'],
+                subscription_id=subscription.id,
+                contact_id=subscription.contact_id,
+                user_id=user_id,
+                scheduled_at=scheduled_at
+            )
+            
+            notif_dict = notification.model_dump()
+            notif_dict['scheduled_at'] = notif_dict['scheduled_at'].isoformat()
+            notif_dict['created_at'] = notif_dict['created_at'].isoformat()
+            
+            await db.notifications.insert_one(notif_dict)
+            notification_count += 1
+            logger.info(f"Created notification {notification.id} scheduled for {scheduled_at}")
+        else:
+            logger.warning(f"Skipping notification - scheduled time {scheduled_at} is in the past")
+    
+    logger.info(f"Created {notification_count} notifications for subscription {subscription.id}")
+
+async def regenerate_notifications(event_id: str, user_id: str):
+    """Regenerate all notifications for an event (when event date changes)"""
+    # Delete pending notifications
+    await db.notifications.delete_many({
+        "event_id": event_id,
+        "status": "pending"
+    })
+    
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        return
+    
+    subscriptions = await db.subscriptions.find({"event_id": event_id}, {"_id": 0}).to_list(1000)
+    
+    for sub in subscriptions:
+        subscription = Subscription(**sub)
+        await generate_notifications_for_subscription(event, subscription, user_id)
+
+# ===================== EMAIL SCHEDULER =====================
+
+async def send_email(to_email: str, subject: str, body: str):
+    """Send email via Gmail SMTP"""
+    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER', '')
+    smtp_password = os.environ.get('SMTP_PASSWORD', '')
+    
+    if not smtp_user or not smtp_password:
+        logger.warning("SMTP credentials not configured, skipping email send")
+        return False
+    
+    message = MIMEMultipart()
+    message['From'] = smtp_user
+    message['To'] = to_email
+    message['Subject'] = subject
+    message.attach(MIMEText(body, 'html'))
+    
+    try:
+        await aiosmtplib.send(
+            message,
+            hostname=smtp_host,
+            port=smtp_port,
+            username=smtp_user,
+            password=smtp_password,
+            start_tls=True
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return False
+
+async def process_pending_notifications():
+    """Process and send pending notifications"""
+    try:
+        now = datetime.now(timezone.utc)
+        
+        pending = await db.notifications.find({
+            "status": "pending",
+            "scheduled_at": {"$lte": now.isoformat()}
+        }, {"_id": 0}).to_list(100)
+    except Exception as e:
+        logger.error(f"Error fetching pending notifications: {e}")
+        return
+    
+    for notif in pending:
+        try:
+            # Get event and contact info
+            event = await db.events.find_one({"id": notif["event_id"]}, {"_id": 0})
+            contact = await db.contacts.find_one({"id": notif["contact_id"]}, {"_id": 0})
+            
+            if not event or not contact:
+                await db.notifications.update_one(
+                    {"id": notif["id"]},
+                    {"$set": {"status": "failed", "error_message": "Event or contact not found"}}
+                )
+                continue
+            
+            # Parse event date
+            event_date = event['event_date']
+            if isinstance(event_date, str):
+                event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+            
+            # Build email content with Spanish formatting
+            months_es = {
+                'January': 'Enero', 'February': 'Febrero', 'March': 'Marzo', 'April': 'Abril',
+                'May': 'Mayo', 'June': 'Junio', 'July': 'Julio', 'August': 'Agosto',
+                'September': 'Septiembre', 'October': 'Octubre', 'November': 'Noviembre', 'December': 'Diciembre'
+            }
+            formatted_date_en = event_date.strftime("%d de %B de %Y")
+            formatted_date = formatted_date_en
+            for en, es in months_es.items():
+                formatted_date = formatted_date.replace(en, es)
+            
+            # Format time in 12-hour format
+            hour = event_date.hour
+            minute = event_date.minute
+            am_pm = 'AM' if hour < 12 else 'PM'
+            hour_12 = hour if hour <= 12 else hour - 12
+            hour_12 = 12 if hour_12 == 0 else hour_12
+            formatted_time = f"{hour_12}:{minute:02d} {am_pm}"
+            
+            subject = f"Recordatorio: {event['title']}"
+            body = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; background: #f3f4f6; }}
+                    .container {{ max-width: 600px; margin: 40px auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
+                    .header {{ background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 40px 30px; text-align: center; }}
+                    .header-icon {{ width: 64px; height: 64px; margin: 0 auto 20px; background: rgba(255,255,255,0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; }}
+                    .header h1 {{ color: white; font-size: 24px; font-weight: 600; margin: 0; }}
+                    .content {{ padding: 40px 30px; }}
+                    .greeting {{ color: #374151; font-size: 16px; margin-bottom: 20px; }}
+                    .event-card {{ background: linear-gradient(to bottom, #f9fafb 0%, #ffffff 100%); border: 2px solid #e5e7eb; border-radius: 12px; padding: 25px; margin: 25px 0; }}
+                    .event-title {{ color: #1f2937; font-size: 22px; font-weight: 600; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #e5e7eb; }}
+                    .event-detail {{ display: flex; align-items: center; margin: 15px 0; padding: 12px; background: white; border-radius: 8px; }}
+                    .detail-icon {{ width: 48px; height: 48px; background: #f3f4f6; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-right: 15px; flex-shrink: 0; font-size: 24px; line-height: 1; }}
+                    .detail-content {{ flex: 1; }}
+                    .detail-label {{ color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600; }}
+                    .detail-value {{ color: #1f2937; font-size: 15px; font-weight: 500; }}
+                    .description {{ color: #4b5563; font-size: 14px; line-height: 1.6; padding: 15px; background: #f9fafb; border-radius: 8px; border-left: 3px solid #6366f1; }}
+                    .footer {{ background: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb; }}
+                    .footer p {{ color: #6b7280; font-size: 12px; margin: 0; }}
+                    .cta-box {{ background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 20px; margin: 25px 0; text-align: center; }}
+                    .cta-box p {{ color: #1e40af; font-size: 14px; font-weight: 500; margin: 0; }}
+                </style>
+            </head>
+            <body>
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: #f3f4f6; padding: 20px;">
+                    <tr>
+                        <td align="center">
+                            <div class="container">
+                                <div class="header">
+                                    <div class="header-icon" style="font-size: 40px; line-height: 1;">🔔</div>
+                                    <h1>Recordatorio de Evento</h1>
+                                </div>
+                                <div class="content">
+                                    <p class="greeting">Hola <strong>{contact['name']}</strong>,</p>
+                                    <p style="color: #4b5563; font-size: 14px; margin-bottom: 20px;">Te recordamos que tienes el siguiente evento programado:</p>
+                                    
+                                    <div class="event-card">
+                                        <div class="event-title">{event['title']}</div>
+                                        
+                                        <div class="event-detail">
+                                            <div class="detail-icon">📅</div>
+                                            <div class="detail-content">
+                                                <div class="detail-label">FECHA</div>
+                                                <div class="detail-value">{formatted_date}</div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="event-detail">
+                                            <div class="detail-icon">🕐</div>
+                                            <div class="detail-content">
+                                                <div class="detail-label">HORA</div>
+                                                <div class="detail-value">{formatted_time}</div>
+                                            </div>
+                                        </div>
+                                        
+                                        {f'''<div class="event-detail">
+                                            <div class="detail-icon">📍</div>
+                                            <div class="detail-content">
+                                                <div class="detail-label">UBICACIÓN</div>
+                                                <div class="detail-value">{event['location']}</div>
+                                            </div>
+                                        </div>''' if event.get('location') else ''}
+                                        
+                                        {f'<div style="margin-top: 20px;"><div class="detail-label" style="margin-bottom: 8px;">Descripción</div><div class="description">{event["description"]}</div></div>' if event.get('description') else ''}
+                                    </div>
+                                    
+                                    <div class="cta-box">
+                                        <p>Marca este evento en tu calendario para no olvidarlo</p>
+                                    </div>
+                                </div>
+                                <div class="footer">
+                                    <p>Este es un recordatorio automático generado por <strong>RemindSender</strong></p>
+                                    <p style="margin-top: 8px;">Sistema de gestión de eventos y notificaciones</p>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+            </body>
+            </html>
+            """
+            
+            # Send email
+            success = await send_email(contact['email'], subject, body)
+            
+            if success:
+                await db.notifications.update_one(
+                    {"id": notif["id"]},
+                    {"$set": {
+                        "status": "sent",
+                        "sent_at": datetime.now(timezone.utc).isoformat()
+                    }}
+                )
+                logger.info(f"Notification sent to {contact['email']} for event {event['title']}")
+            else:
+                await db.notifications.update_one(
+                    {"id": notif["id"]},
+                    {"$set": {
+                        "status": "failed",
+                        "error_message": "Failed to send email"
+                    }}
+                )
+        except Exception as e:
+            logger.error(f"Error processing notification {notif['id']}: {e}")
+            await db.notifications.update_one(
+                {"id": notif["id"]},
+                {"$set": {"status": "failed", "error_message": str(e)}}
+            )
+
+# Initialize scheduler
+scheduler = AsyncIOScheduler()
+
+@app.on_event("startup")
+async def startup_event():
+    # Schedule notification processing every minute
+    scheduler.add_job(process_pending_notifications, 'interval', minutes=1)
+    scheduler.start()
+    logger.info("Notification scheduler started")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
+    client.close()
+    logger.info("Scheduler and database connection closed")
+
+# Configure CORS first
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include the router in the main app
+app.include_router(api_router)
