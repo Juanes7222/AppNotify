@@ -1,11 +1,16 @@
 from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.middleware.gzip import GZipMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from contextlib import asynccontextmanager
 from pathlib import Path
 import os
 import logging
+import time
+
 
 # Import routes
 from routes import auth_routes, contacts, events, subscriptions, notifications, dashboard
@@ -30,20 +35,38 @@ client = AsyncIOMotorClient(
 )
 db = client[os.environ['DB_NAME']]
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Código de startup
+    scheduler.add_job(lambda: process_pending_notifications(db), 'interval', minutes=1)
+    scheduler.start()
+    logger.info("Notification scheduler started")
+    
+    yield
+    
+    # Código de shutdown
+    scheduler.shutdown()
+    client.close()
+    logger.info("Scheduler and database connection closed")
+
 # Create the main app
-app = FastAPI(title="Event Reminder System")
+app = FastAPI(title="Event Reminder System", lifespan=lifespan)
 
 # Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+api_router = APIRouter()
 
 # Basic routes
+
+@api_router.head("/")
 @api_router.get("/")
 async def root():
-    return {"message": "Event Reminder System API"}
+    return {"message": "Sistema Iglesia API v1.0", "status": "running"}
 
+@api_router.head("/")
 @api_router.get("/health")
 async def health():
     return {"status": "healthy"}
+
 
 # Include all route modules
 api_router.include_router(auth_routes.router)
@@ -56,19 +79,6 @@ api_router.include_router(notifications.router)
 # Initialize scheduler
 scheduler = AsyncIOScheduler()
 
-@app.on_event("startup")
-async def startup_event():
-    # Schedule notification processing every minute
-    scheduler.add_job(lambda: process_pending_notifications(db), 'interval', minutes=1)
-    scheduler.start()
-    logger.info("Notification scheduler started")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    scheduler.shutdown()
-    client.close()
-    logger.info("Scheduler and database connection closed")
-
 # Configure CORS first
 app.add_middleware(
     CORSMiddleware,
@@ -77,6 +87,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(f"{process_time:.4f}")
+    
+    # Log slow requests (> 1 segundo)
+    if process_time > 1.0:
+        logger.warning(f"Slow request: {request.method} {request.url.path} took {process_time:.4f}s")
+    
+    return response
 
 # Include the router in the main app
 app.include_router(api_router)
