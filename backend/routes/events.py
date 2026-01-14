@@ -123,12 +123,17 @@ async def update_event(event_id: str, event_data: EventUpdate, user_info: dict =
     update_data = {k: v for k, v in event_data.model_dump().items() if v is not None}
     update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
     
+    # Check if we need to regenerate notifications (date or reminders changed)
+    should_regenerate = 'event_date' in update_data or 'reminder_intervals' in update_data
+    
     if 'event_date' in update_data:
         update_data['event_date'] = update_data['event_date'].isoformat()
-        # Regenerate notifications if date changed
-        await regenerate_notifications(event_id, user["id"], db)
     
     await db.events.update_one({"id": event_id}, {"$set": update_data})
+    
+    # Regenerate notifications if date or reminders changed
+    if should_regenerate:
+        await regenerate_notifications(event_id, user["id"], db)
     
     updated_event = await db.events.find_one({"id": event_id}, {"_id": 0})
     updated_event["subscribers_count"] = await db.subscriptions.count_documents({"event_id": event_id})

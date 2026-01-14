@@ -35,17 +35,36 @@ client = AsyncIOMotorClient(
 )
 db = client[os.environ['DB_NAME']]
 
+# Initialize scheduler (must be before lifespan)
+scheduler = AsyncIOScheduler()
+scheduler_running = False
+
+# Async wrapper for scheduler job
+async def process_notifications_job():
+    """Wrapper to run async notification processing in scheduler"""
+    try:
+        await process_pending_notifications(db)
+    except Exception as e:
+        logger.error(f"Error in notification job: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global scheduler_running
     # Código de startup
-    scheduler.add_job(lambda: process_pending_notifications(db), 'interval', minutes=1)
-    scheduler.start()
-    logger.info("Notification scheduler started")
+    if not scheduler_running:
+        scheduler.add_job(process_notifications_job, 'interval', minutes=1)
+        scheduler.start()
+        scheduler_running = True
+        logger.info("Notification scheduler started")
+    else:
+        logger.warning("Scheduler already running, skipping initialization")
     
     yield
     
     # Código de shutdown
-    scheduler.shutdown()
+    if scheduler_running:
+        scheduler.shutdown(wait=False)
+        scheduler_running = False
     client.close()
     logger.info("Scheduler and database connection closed")
 
@@ -75,9 +94,6 @@ api_router.include_router(contacts.router)
 api_router.include_router(events.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(notifications.router)
-
-# Initialize scheduler
-scheduler = AsyncIOScheduler()
 
 # Configure CORS first
 app.add_middleware(

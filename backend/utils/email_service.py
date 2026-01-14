@@ -4,6 +4,7 @@ import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ async def send_email(to_email: str, subject: str, body: str):
     try:
         await aiosmtplib.send(
             message,
+            timeout=30,
             hostname=smtp_host,
             port=smtp_port,
             username=smtp_user,
@@ -40,38 +42,52 @@ async def send_email(to_email: str, subject: str, body: str):
         return False
 
 
-def format_date_spanish(event_date: datetime) -> str:
-    """Format date in Spanish"""
+def format_date_spanish(event_date: datetime, user_timezone: str = "America/Bogota") -> str:
+    """Format date in Spanish, converting from UTC to user's timezone"""
+    # Convert UTC to user's timezone
+    if event_date.tzinfo is None:
+        from datetime import timezone as tz
+        event_date = event_date.replace(tzinfo=tz.utc)
+    
+    local_date = event_date.astimezone(ZoneInfo(user_timezone))
+    
     months_es = {
         'January': 'Enero', 'February': 'Febrero', 'March': 'Marzo', 'April': 'Abril',
         'May': 'Mayo', 'June': 'Junio', 'July': 'Julio', 'August': 'Agosto',
         'September': 'Septiembre', 'October': 'Octubre', 'November': 'Noviembre', 'December': 'Diciembre'
     }
-    formatted_date_en = event_date.strftime("%d de %B de %Y")
+    formatted_date_en = local_date.strftime("%d de %B de %Y")
     formatted_date = formatted_date_en
     for en, es in months_es.items():
         formatted_date = formatted_date.replace(en, es)
     return formatted_date
 
 
-def format_time_12h(event_date: datetime) -> str:
-    """Format time in 12-hour format"""
-    hour = event_date.hour
-    minute = event_date.minute
+def format_time_12h(event_date: datetime, user_timezone: str = "America/Bogota") -> str:
+    """Format time in 12-hour format, converting from UTC to user's timezone"""
+    # Convert UTC to user's timezone
+    if event_date.tzinfo is None:
+        from datetime import timezone as tz
+        event_date = event_date.replace(tzinfo=tz.utc)
+    
+    local_date = event_date.astimezone(ZoneInfo(user_timezone))
+    
+    hour = local_date.hour
+    minute = local_date.minute
     am_pm = 'AM' if hour < 12 else 'PM'
     hour_12 = hour if hour <= 12 else hour - 12
     hour_12 = 12 if hour_12 == 0 else hour_12
     return f"{hour_12}:{minute:02d} {am_pm}"
 
 
-def generate_reminder_email(event: dict, contact: dict) -> tuple[str, str]:
+def generate_reminder_email(event: dict, contact: dict, user_timezone: str = "America/Bogota") -> tuple[str, str]:
     """Generate reminder email HTML"""
     event_date = event['event_date']
     if isinstance(event_date, str):
         event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
     
-    formatted_date = format_date_spanish(event_date)
-    formatted_time = format_time_12h(event_date)
+    formatted_date = format_date_spanish(event_date, user_timezone)
+    formatted_time = format_time_12h(event_date, user_timezone)
     
     subject = f"Recordatorio: {event['title']}"
     body = f"""
@@ -165,14 +181,14 @@ def generate_reminder_email(event: dict, contact: dict) -> tuple[str, str]:
     return subject, body
 
 
-def generate_test_reminder_email(event: dict, contact: dict) -> tuple[str, str]:
+def generate_test_reminder_email(event: dict, contact: dict, user_timezone: str = "America/Bogota") -> tuple[str, str]:
     """Generate test reminder email HTML"""
     event_date = event['event_date']
     if isinstance(event_date, str):
         event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
     
-    formatted_date = format_date_spanish(event_date)
-    formatted_time = format_time_12h(event_date)
+    formatted_date = format_date_spanish(event_date, user_timezone)
+    formatted_time = format_time_12h(event_date, user_timezone)
     
     subject = f"[PRUEBA] Recordatorio: {event['title']}"
     body = f"""

@@ -116,25 +116,32 @@ async def process_pending_notifications(db):
             "status": "pending",
             "scheduled_at": {"$lte": now.isoformat()}
         }, {"_id": 0}).to_list(100)
+        
+        if len(pending) > 0:
+            logger.info(f"Processing {len(pending)} pending notifications")
     except Exception as e:
         logger.error(f"Error fetching pending notifications: {e}")
         return
     
     for notif in pending:
         try:
-            # Get event and contact info
+            # Get event, contact, and user info
             event = await db.events.find_one({"id": notif["event_id"]}, {"_id": 0})
             contact = await db.contacts.find_one({"id": notif["contact_id"]}, {"_id": 0})
+            user = await db.users.find_one({"id": event["user_id"]}, {"_id": 0}) if event else None
             
-            if not event or not contact:
+            if not event or not contact or not user:
                 await db.notifications.update_one(
                     {"id": notif["id"]},
-                    {"$set": {"status": "failed", "error_message": "Event or contact not found"}}
+                    {"$set": {"status": "failed", "error_message": "Event, contact, or user not found"}}
                 )
                 continue
             
-            # Generate email
-            subject, body = generate_reminder_email(event, contact)
+            # Get user timezone (default to America/Bogota)
+            user_timezone = user.get("timezone", "America/Bogota")
+            
+            # Generate email with user's timezone
+            subject, body = generate_reminder_email(event, contact, user_timezone)
             
             # Send email
             success = await send_email(contact['email'], subject, body)

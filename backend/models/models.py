@@ -7,6 +7,8 @@ class UserBase(BaseModel):
     email: EmailStr
     display_name: Optional[str] = None
     photo_url: Optional[str] = None
+    timezone: Optional[str] = "America/Bogota"
+    timezone: Optional[str] = "America/Bogota"  # Default to Colombia timezone
 
 class User(UserBase):
     model_config = ConfigDict(extra="ignore")

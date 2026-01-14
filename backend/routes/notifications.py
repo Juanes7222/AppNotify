@@ -73,9 +73,12 @@ async def send_test_notification(notification_id: str, user_info: dict = Depends
     if not event or not contact:
         raise HTTPException(status_code=404, detail="Event or contact not found")
     
+    # Get user timezone
+    user_timezone = user.get("timezone", "America/Bogota")
+    
     try:
-        # Generate test email
-        subject, body = generate_test_reminder_email(event, contact)
+        # Generate test email with user's timezone
+        subject, body = generate_test_reminder_email(event, contact, user_timezone)
         
         # Send email
         success = await send_email(contact['email'], subject, body)
