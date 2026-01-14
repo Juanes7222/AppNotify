@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Event Reminder System", lifespan=lifespan)
 
 # Create a router with the /api prefix
-api_router = APIRouter()
+api_router = APIRouter(prefix="/api")
 
 # Basic routes
 
