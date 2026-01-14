@@ -37,6 +37,7 @@ const REMINDER_UNITS = [
   { value: 'hours', label: 'Horas' },
   { value: 'days', label: 'Días' },
   { value: 'weeks', label: 'Semanas' },
+  { value: 'custom', label: 'Personalizado' },
 ];
 
 const EventCard = ({ event, onEdit, onDelete }) => {
@@ -147,7 +148,7 @@ const EventForm = ({ event, onSubmit, onClose, loading, contacts }) => {
   const handleAddReminder = () => {
     setFormData(prev => ({
       ...prev,
-      reminder_intervals: [...prev.reminder_intervals, { value: 1, unit: 'days' }]
+      reminder_intervals: [...prev.reminder_intervals, { value: 1, unit: 'days', custom_date: null }]
     }));
   };
 
@@ -161,9 +162,23 @@ const EventForm = ({ event, onSubmit, onClose, loading, contacts }) => {
   const handleReminderChange = (index, field, value) => {
     setFormData(prev => ({
       ...prev,
-      reminder_intervals: prev.reminder_intervals.map((r, i) => 
-        i === index ? { ...r, [field]: field === 'value' ? parseInt(value) || 1 : value } : r
-      )
+      reminder_intervals: prev.reminder_intervals.map((r, i) => {
+        if (i !== index) return r;
+        
+        if (field === 'unit' && value === 'custom') {
+          // Al cambiar a personalizado, inicializar con fecha/hora actual
+          return { ...r, unit: 'custom', value: null, custom_date: new Date().toISOString() };
+        } else if (field === 'unit' && value !== 'custom') {
+          // Al cambiar de personalizado a otro, remover custom_date
+          return { ...r, unit: value, value: r.value || 1, custom_date: null };
+        } else if (field === 'value') {
+          return { ...r, value: parseInt(value) || 1 };
+        } else if (field === 'custom_date') {
+          return { ...r, custom_date: value };
+        } else {
+          return { ...r, [field]: value };
+        }
+      })
     }));
   };
 
@@ -273,39 +288,94 @@ const EventForm = ({ event, onSubmit, onClose, loading, contacts }) => {
         
         <div className="space-y-2">
           {formData.reminder_intervals.map((reminder, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <Input
-                type="number"
-                min="1"
-                value={reminder.value}
-                onChange={(e) => handleReminderChange(index, 'value', e.target.value)}
-                className="w-20"
-                data-testid={`reminder-value-${index}`}
-              />
-              <Select
-                value={reminder.unit}
-                onValueChange={(value) => handleReminderChange(index, 'unit', value)}
-              >
-                <SelectTrigger className="flex-1" data-testid={`reminder-unit-${index}`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {REMINDER_UNITS.map((unit) => (
-                    <SelectItem key={unit.value} value={unit.value}>
-                      {unit.label} antes
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => handleRemoveReminder(index)}
-                data-testid={`remove-reminder-${index}`}
-              >
-                <X className="w-4 h-4" />
-              </Button>
+            <div key={index} className="space-y-2 p-3 border rounded-lg bg-muted/50">
+              <div className="flex items-center gap-2">
+                <Select
+                  value={reminder.unit}
+                  onValueChange={(value) => handleReminderChange(index, 'unit', value)}
+                >
+                  <SelectTrigger className="flex-1" data-testid={`reminder-unit-${index}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {REMINDER_UNITS.map((unit) => (
+                      <SelectItem key={unit.value} value={unit.value}>
+                        {unit.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => handleRemoveReminder(index)}
+                  data-testid={`remove-reminder-${index}`}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+              
+              {reminder.unit === 'custom' ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Fecha</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="w-full justify-start text-left font-normal text-xs h-9"
+                        >
+                          <CalendarIcon className="mr-2 h-3 w-3" />
+                          {reminder.custom_date ? format(parseISO(reminder.custom_date), 'dd MMM yyyy', { locale: es }) : 'Seleccionar'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={reminder.custom_date ? parseISO(reminder.custom_date) : new Date()}
+                          onSelect={(date) => {
+                            if (date) {
+                              const currentTime = reminder.custom_date ? parseISO(reminder.custom_date) : new Date();
+                              date.setHours(currentTime.getHours(), currentTime.getMinutes());
+                              handleReminderChange(index, 'custom_date', date.toISOString());
+                            }
+                          }}
+                          locale={es}
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Hora</Label>
+                    <Input
+                      type="time"
+                      className="h-9 text-xs"
+                      value={reminder.custom_date ? format(parseISO(reminder.custom_date), 'HH:mm') : '12:00'}
+                      onChange={(e) => {
+                        const [hours, minutes] = e.target.value.split(':');
+                        const customDate = reminder.custom_date ? parseISO(reminder.custom_date) : new Date();
+                        customDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+                        handleReminderChange(index, 'custom_date', customDate.toISOString());
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min="1"
+                    value={reminder.value || 1}
+                    onChange={(e) => handleReminderChange(index, 'value', e.target.value)}
+                    className="w-20 h-9"
+                    data-testid={`reminder-value-${index}`}
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {REMINDER_UNITS.find(u => u.value === reminder.unit)?.label.toLowerCase()} antes
+                  </span>
+                </div>
+              )}
             </div>
           ))}
           

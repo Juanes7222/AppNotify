@@ -77,8 +77,9 @@ class ContactCreate(BaseModel):
     notes: Optional[str] = None
 
 class ReminderInterval(BaseModel):
-    value: int
-    unit: str  # 'minutes', 'hours', 'days', 'weeks'
+    value: Optional[int] = None
+    unit: str  # 'minutes', 'hours', 'days', 'weeks', 'custom'
+    custom_date: Optional[datetime] = None  # For custom reminders
 
 class Event(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -849,6 +850,16 @@ def calculate_notification_time(event_date: datetime, interval: ReminderInterval
     if event_date.tzinfo is None:
         event_date = event_date.replace(tzinfo=timezone.utc)
     
+    # Handle custom date reminders
+    if interval.unit == 'custom' and interval.custom_date:
+        scheduled = interval.custom_date
+        if isinstance(scheduled, str):
+            scheduled = datetime.fromisoformat(scheduled.replace('Z', '+00:00'))
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=timezone.utc)
+        return scheduled
+    
+    # Handle interval-based reminders
     if interval.unit == 'minutes':
         scheduled = event_date - timedelta(minutes=interval.value)
     elif interval.unit == 'hours':
