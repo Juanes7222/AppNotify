@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { sendTestEmail } from '../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
@@ -14,13 +15,30 @@ import {
   Sun,
   Bell,
   Shield,
-  Info
+  Info,
+  Send,
+  Loader2
 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { toast } from 'sonner';
 
 const SettingsPage = () => {
   const { user, dbUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const [sendingTest, setSendingTest] = useState(false);
+
+  const handleTestEmail = async () => {
+    setSendingTest(true);
+    try {
+      const response = await sendTestEmail();
+      toast.success(`Correo de prueba enviado a ${response.data.email}`);
+    } catch (error) {
+      console.error('Error sending test email:', error);
+      toast.error('Error al enviar correo de prueba');
+    } finally {
+      setSendingTest(false);
+    }
+  };
 
   const getInitials = (name) => {
     if (!name) return 'U';
@@ -167,6 +185,46 @@ const SettingsPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                <div className="flex items-start gap-3">
+                  <Info className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-500">Estado del servicio</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Los correos se envían automáticamente según la configuración de cada evento.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div>
+                <Button 
+                  onClick={handleTestEmail} 
+                  disabled={sendingTest}
+                  className="w-full"
+                  variant="outline"
+                >
+                  {sendingTest ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Enviando...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4 mr-2" />
+                      Enviar Correo de Prueba
+                    </>
+                  )}
+                </Button>
+                <p className="text-xs text-muted-foreground mt-2 text-center">
+                  Se enviará un correo de prueba a tu dirección registrada
+                </p>
+              </div>
+
+              <Separator />
+
+              <div className="p-4 rounded-lg bg-secondary/50">
                 <div className="flex items-start gap-3">
                   <Info className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                   <div>

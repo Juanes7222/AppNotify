@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getNotifications } from '../lib/api';
+import { getNotifications, sendTestNotification } from '../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -13,7 +13,9 @@ import {
   AlertCircle,
   Mail,
   Calendar,
-  Filter
+  Filter,
+  RefreshCw,
+  Send
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
@@ -42,6 +44,7 @@ const NotificationsPage = () => {
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sendingTest, setSendingTest] = useState({});
 
   const fetchNotifications = async () => {
     setLoading(true);
@@ -59,7 +62,22 @@ const NotificationsPage = () => {
 
   useEffect(() => {
     fetchNotifications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);
+
+  const handleSendTest = async (notificationId) => {
+    setSendingTest(prev => ({ ...prev, [notificationId]: true }));
+    try {
+      await sendTestNotification(notificationId);
+      toast.success('Correo de prueba enviado correctamente');
+      fetchNotifications(); // Refresh to show updated status
+    } catch (error) {
+      console.error('Error sending test notification:', error);
+      toast.error('Error al enviar correo de prueba');
+    } finally {
+      setSendingTest(prev => ({ ...prev, [notificationId]: false }));
+    }
+  };
 
   const stats = {
     total: notifications.length,
@@ -71,11 +89,17 @@ const NotificationsPage = () => {
   return (
     <div className="space-y-6" data-testid="notifications-page">
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Historial de Notificaciones</h1>
-        <p className="text-muted-foreground">
-          Registro de todos los recordatorios enviados y pendientes
-        </p>
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Historial de Notificaciones</h1>
+          <p className="text-muted-foreground">
+            Registro de todos los recordatorios enviados y pendientes
+          </p>
+        </div>
+        <Button onClick={fetchNotifications} variant="outline" size="sm">
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Actualizar
+        </Button>
       </div>
 
       {/* Stats */}
@@ -172,6 +196,7 @@ const NotificationsPage = () => {
                   <TableHead>Programado</TableHead>
                   <TableHead>Enviado</TableHead>
                   <TableHead>Estado</TableHead>
+                  <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -217,6 +242,25 @@ const NotificationsPage = () => {
                     </TableCell>
                     <TableCell>
                       <StatusBadge status={notification.status} />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {notification.status === 'pending' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleSendTest(notification.id)}
+                          disabled={sendingTest[notification.id]}
+                        >
+                          {sendingTest[notification.id] ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Send className="w-4 h-4 mr-1" />
+                              Enviar Prueba
+                            </>
+                          )}
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

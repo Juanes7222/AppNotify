@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getEvents, createEvent, updateEvent, deleteEvent } from '../lib/api';
+import { getEvents, createEvent, updateEvent, deleteEvent, getContacts, addSubscription } from '../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -11,6 +11,7 @@ import { Calendar } from '../components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger, SheetFooter } from '../components/ui/sheet';
+import { Checkbox } from '../components/ui/checkbox';
 import { 
   Plus, 
   Calendar as CalendarIcon, 
@@ -127,19 +128,21 @@ const EventCard = ({ event, onEdit, onDelete }) => {
   );
 };
 
-const EventForm = ({ event, onSubmit, onClose, loading }) => {
+const EventForm = ({ event, onSubmit, onClose, loading, contacts }) => {
   const [formData, setFormData] = useState({
     title: event?.title || '',
     description: event?.description || '',
     event_date: event?.event_date ? parseISO(event.event_date) : new Date(),
     location: event?.location || '',
     reminder_intervals: event?.reminder_intervals || [],
+    selectedContacts: [], // Nuevos contactos seleccionados
   });
   const [time, setTime] = useState(
     event?.event_date 
       ? format(parseISO(event.event_date), 'HH:mm')
       : '12:00'
   );
+  const [contactSearch, setContactSearch] = useState('');
 
   const handleAddReminder = () => {
     setFormData(prev => ({
@@ -314,6 +317,65 @@ const EventForm = ({ event, onSubmit, onClose, loading }) => {
         </div>
       </div>
 
+      {/* Selector de contactos */}
+      {!event && contacts && contacts.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label>Contactos a notificar</Label>
+            <Badge variant="secondary">
+              {formData.selectedContacts.length} seleccionados
+            </Badge>
+          </div>
+          
+          <Input
+            placeholder="Buscar contacto..."
+            value={contactSearch}
+            onChange={(e) => setContactSearch(e.target.value)}
+            className="mb-2"
+          />
+          
+          <div className="max-h-48 overflow-y-auto space-y-2 border rounded-md p-3">
+            {contacts
+              .filter(contact => 
+                contact.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
+                contact.email.toLowerCase().includes(contactSearch.toLowerCase())
+              )
+              .map((contact) => (
+                <div key={contact.id} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={`contact-${contact.id}`}
+                    checked={formData.selectedContacts.includes(contact.id)}
+                    onCheckedChange={(checked) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        selectedContacts: checked
+                          ? [...prev.selectedContacts, contact.id]
+                          : prev.selectedContacts.filter(id => id !== contact.id)
+                      }));
+                    }}
+                  />
+                  <label
+                    htmlFor={`contact-${contact.id}`}
+                    className="flex-1 text-sm cursor-pointer"
+                  >
+                    <div className="font-medium">{contact.name}</div>
+                    <div className="text-xs text-muted-foreground">{contact.email}</div>
+                  </label>
+                </div>
+              ))}
+          </div>
+          
+          {contacts.filter(contact => 
+            contact.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
+            contact.email.toLowerCase().includes(contactSearch.toLowerCase())
+          ).length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-4">
+              No se encontraron contactos
+            </p>
+          )}
+        </div>
+      )}
+
       <SheetFooter className="gap-2">
         <Button type="button" variant="outline" onClick={onClose} disabled={loading}>
           Cancelar
@@ -335,6 +397,7 @@ const EventForm = ({ event, onSubmit, onClose, loading }) => {
 
 const EventsPage = () => {
   const [events, setEvents] = useState([]);
+  const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [formLoading, setFormLoading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -353,15 +416,41 @@ const EventsPage = () => {
     }
   };
 
+  const fetchContacts = async () => {
+    try {
+      const response = await getContacts();
+      setContacts(response.data);
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+    }
+  };
+
   useEffect(() => {
     fetchEvents();
+    fetchContacts();
   }, []);
 
   const handleCreateEvent = async (data) => {
     setFormLoading(true);
     try {
-      await createEvent(data);
-      toast.success('Evento creado correctamente');
+      const { selectedContacts, ...eventData } = data;
+      const response = await createEvent(eventData);
+      const newEvent = response.data;
+      
+      // Suscribir los contactos seleccionados
+      if (selectedContacts && selectedContacts.length > 0) {
+        for (const contactId of selectedContacts) {
+          try {
+            await addSubscription(newEvent.id, contactId);
+          } catch (err) {
+            console.error(`Error subscribing contact ${contactId}:`, err);
+          }
+        }
+        toast.success(`Evento creado con ${selectedContacts.length} contacto(s) suscrito(s)`);
+      } else {
+        toast.success('Evento creado correctamente');
+      }
+      
       setSheetOpen(false);
       fetchEvents();
     } catch (error) {
@@ -375,7 +464,8 @@ const EventsPage = () => {
   const handleUpdateEvent = async (data) => {
     setFormLoading(true);
     try {
-      await updateEvent(editingEvent.id, data);
+      const { selectedContacts, ...eventData } = data;
+      await updateEvent(editingEvent.id, eventData);
       toast.success('Evento actualizado correctamente');
       setSheetOpen(false);
       setEditingEvent(null);
@@ -458,6 +548,7 @@ const EventsPage = () => {
                 onSubmit={editingEvent ? handleUpdateEvent : handleCreateEvent}
                 onClose={handleCloseSheet}
                 loading={formLoading}
+                contacts={contacts}
               />
             </div>
           </SheetContent>

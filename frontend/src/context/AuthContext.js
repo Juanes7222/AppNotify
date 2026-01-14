@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, onAuthStateChanged, getIdToken } from '../lib/firebase';
 import axios from 'axios';
+import { setAuthToken } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -21,6 +22,9 @@ export const AuthProvider = ({ children }) => {
           const idToken = await firebaseUser.getIdToken();
           setToken(idToken);
           
+          // Save token to localStorage
+          setAuthToken(idToken);
+          
           // Verify with backend and get/create user
           const response = await axios.post(
             `${BACKEND_URL}/api/auth/verify`,
@@ -36,6 +40,7 @@ export const AuthProvider = ({ children }) => {
         setUser(null);
         setDbUser(null);
         setToken(null);
+        setAuthToken(null);
       }
       setLoading(false);
     });

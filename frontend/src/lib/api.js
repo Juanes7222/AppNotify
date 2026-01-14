@@ -71,5 +71,9 @@ export const getNotifications = (status, limit = 100) => {
   if (limit) params.append('limit', limit.toString());
   return api.get(`/notifications?${params.toString()}`);
 };
+export const sendTestNotification = (notificationId) => api.post(`/notifications/${notificationId}/send-test`);
+
+// Test email
+export const sendTestEmail = () => api.post('/test-email');
 
 export default api;

@@ -187,7 +187,10 @@ async def get_or_create_user(user_info: dict) -> dict:
     user_dict['created_at'] = user_dict['created_at'].isoformat()
     
     await db.users.insert_one(user_dict)
-    return new_user.model_dump()
+    
+    # Remove _id if it was added by MongoDB
+    user_dict.pop('_id', None)
+    return user_dict
 
 # ===================== ROUTES =====================
 
@@ -314,6 +317,9 @@ async def create_contact(contact_data: ContactCreate, user_info: dict = Depends(
     contact_dict['created_at'] = contact_dict['created_at'].isoformat()
     
     await db.contacts.insert_one(contact_dict)
+    
+    # Remove _id if it was added by MongoDB
+    contact_dict.pop('_id', None)
     return contact_dict
 
 @api_router.get("/contacts/{contact_id}", response_model=dict)
@@ -392,6 +398,9 @@ async def create_event(event_data: EventCreate, user_info: dict = Depends(verify
     event_dict['updated_at'] = event_dict['updated_at'].isoformat()
     
     await db.events.insert_one(event_dict)
+    
+    # Remove _id if it was added by MongoDB
+    event_dict.pop('_id', None)
     event_dict["subscribers_count"] = 0
     return event_dict
 
@@ -504,6 +513,9 @@ async def add_subscription(event_id: str, sub_data: SubscriptionCreate, user_inf
     
     await db.subscriptions.insert_one(sub_dict)
     
+    # Remove _id if it was added by MongoDB
+    sub_dict.pop('_id', None)
+    
     # Generate notifications for this subscription
     await generate_notifications_for_subscription(event, subscription, user["id"])
     
@@ -530,6 +542,94 @@ async def remove_subscription(event_id: str, subscription_id: str, user_info: di
     return {"message": "Subscription removed successfully"}
 
 # Notification routes
+@api_router.post("/notifications/{notification_id}/send-test")
+async def send_test_notification(notification_id: str, user_info: dict = Depends(verify_firebase_token)):
+    """Send a notification immediately for testing purposes"""
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    notif = await db.notifications.find_one({
+        "id": notification_id,
+        "user_id": user["id"]
+    }, {"_id": 0})
+    
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    
+    if notif["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Can only send pending notifications")
+    
+    # Get event and contact info
+    event = await db.events.find_one({"id": notif["event_id"]}, {"_id": 0})
+    contact = await db.contacts.find_one({"id": notif["contact_id"]}, {"_id": 0})
+    
+    if not event or not contact:
+        raise HTTPException(status_code=404, detail="Event or contact not found")
+    
+    try:
+        # Parse event date
+        event_date = event['event_date']
+        if isinstance(event_date, str):
+            event_date = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+        
+        formatted_date = event_date.strftime("%d/%m/%Y a las %H:%M")
+        
+        # Prepare email
+        subject = f"🔔 Recordatorio: {event['title']}"
+        body = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }}
+                .content {{ background: #f9f9f9; padding: 20px; border-radius: 0 0 10px 10px; }}
+                .event-details {{ background: white; padding: 15px; border-radius: 8px; margin: 15px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2 style="margin: 0;">🔔 Recordatorio de Evento</h2>
+                </div>
+                <div class="content">
+                    <p>Hola <strong>{contact['name']}</strong>,</p>
+                    <p>Este es un recordatorio sobre el siguiente evento:</p>
+                    <div class="event-details">
+                        <h3 style="margin-top: 0; color: #667eea;">{event['title']}</h3>
+                        <p style="margin: 5px 0;"><strong>📅 Fecha:</strong> {formatted_date}</p>
+                        {f"<p style='margin: 5px 0;'><strong>📍 Ubicación:</strong> {event['location']}</p>" if event.get('location') else ""}
+                        {f"<p style='margin: 5px 0;'><strong>📝 Descripción:</strong> {event['description']}</p>" if event.get('description') else ""}
+                    </div>
+                    <p style="color: #71717A; font-size: 12px; margin-top: 20px;">
+                        ⚠️ Este es un correo de prueba enviado manualmente desde el sistema de recordatorios.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Send email
+        success = await send_email(contact['email'], subject, body)
+        
+        if success:
+            await db.notifications.update_one(
+                {"id": notification_id},
+                {"$set": {
+                    "status": "sent",
+                    "sent_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+            return {"message": "Test notification sent successfully", "email": contact['email']}
+        else:
+            return {"message": "Failed to send test notification", "email": contact['email']}
+            
+    except Exception as e:
+        logger.error(f"Error sending test notification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.get("/notifications", response_model=List[dict])
 async def get_notifications(
     user_info: dict = Depends(verify_firebase_token),
@@ -560,6 +660,70 @@ async def get_notifications(
         })
     
     return enriched
+
+@api_router.post("/test-email")
+async def test_email(user_info: dict = Depends(verify_firebase_token)):
+    """Send a test email to verify SMTP configuration"""
+    user = await db.users.find_one({"firebase_uid": user_info["uid"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        subject = "🔔 Correo de Prueba - RemindSender"
+        body = """
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; text-align: center; }
+                .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+                .success { background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #10b981; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2 style="margin: 0;">✅ Sistema de Correos Funcionando</h2>
+                </div>
+                <div class="content">
+                    <div class="success">
+                        <h3 style="color: #10b981; margin-top: 0;">¡Prueba exitosa!</h3>
+                        <p>Si estás leyendo este correo, significa que la configuración SMTP está funcionando correctamente.</p>
+                    </div>
+                    <p><strong>Detalles de la prueba:</strong></p>
+                    <ul>
+                        <li>Usuario: {}</li>
+                        <li>Email: {}</li>
+                        <li>Fecha: {}</li>
+                    </ul>
+                    <p style="color: #71717A; font-size: 12px; margin-top: 30px;">
+                        Este es un correo de prueba enviado desde RemindSender para verificar la configuración del servidor SMTP.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """.format(
+            user.get('display_name', 'Usuario de prueba'),
+            user['email'],
+            datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+        )
+        
+        success = await send_email(user['email'], subject, body)
+        
+        if success:
+            return {
+                "success": True,
+                "message": f"Correo de prueba enviado exitosamente a {user['email']}",
+                "email": user['email']
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send test email")
+            
+    except Exception as e:
+        logger.error(f"Error sending test email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===================== HELPER FUNCTIONS =====================
 
@@ -748,9 +912,7 @@ async def shutdown_event():
     client.close()
     logger.info("Scheduler and database connection closed")
 
-# Include the router in the main app
-app.include_router(api_router)
-
+# Configure CORS first
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -758,3 +920,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include the router in the main app
+app.include_router(api_router)
