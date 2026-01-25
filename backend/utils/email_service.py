@@ -1,6 +1,7 @@
 import os
 import logging
 import aiosmtplib
+import aiohttp
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -9,20 +10,19 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 
-async def send_email(to_email: str, subject: str, body: str):
-    """Send email via Gmail SMTP"""
-    
+async def send_email_smtp(to_email: str, subject: str, body: str, from_email: str) -> bool:
+    """Send email via SMTP"""
     smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
     smtp_port = int(os.environ.get('SMTP_PORT', '587'))
     smtp_user = os.environ.get('SMTP_USER', '')
     smtp_password = os.environ.get('SMTP_PASSWORD', '')
     
     if not smtp_user or not smtp_password:
-        logger.warning("SMTP credentials not configured, skipping email send")
+        logger.warning("SMTP credentials not configured")
         return False
     
     message = MIMEMultipart()
-    message['From'] = smtp_user
+    message['From'] = from_email or smtp_user
     message['To'] = to_email
     message['Subject'] = subject
     message.attach(MIMEText(body, 'html'))
@@ -42,11 +42,73 @@ async def send_email(to_email: str, subject: str, body: str):
             use_tls=use_tls,
             start_tls=use_starttls
         )
-        logger.info(f"Email sent successfully to {to_email}")
+        logger.info(f"Email sent successfully via SMTP to {to_email}")
         return True
     except Exception as e:
-        logger.error(f"Failed to send email via port {smtp_port}: {e}")
+        logger.error(f"Failed to send email via SMTP: {e}")
         return False
+
+
+async def send_email_brevo(to_email: str, subject: str, body: str, from_email: str, from_name: str) -> bool:
+    """Send email via Brevo API"""
+    brevo_api_key = os.environ.get('BREVO_API_KEY', '')
+    
+    if not brevo_api_key:
+        logger.warning("Brevo API key not configured")
+        return False
+    
+    brevo_api_url = "https://api.brevo.com/v3/smtp/email"
+    
+    headers = {
+        'accept': 'application/json',
+        'api-key': brevo_api_key,
+        'content-type': 'application/json'
+    }
+    
+    payload = {
+        'sender': {
+            'name': from_name,
+            'email': from_email
+        },
+        'to': [
+            {
+                'email': to_email
+            }
+        ],
+        'subject': subject,
+        'htmlContent': body
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(brevo_api_url, json=payload, headers=headers, timeout=30) as response:
+                if response.status in [200, 201]:
+                    logger.info(f"Email sent successfully via Brevo to {to_email}")
+                    return True
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Failed to send email via Brevo. Status: {response.status}, Error: {error_text}")
+                    return False
+    except Exception as e:
+        logger.error(f"Failed to send email via Brevo: {e}")
+        return False
+
+
+async def send_email(to_email: str, subject: str, body: str):
+    """Send email using configured provider (SMTP or Brevo)"""
+    email_provider = os.environ.get('EMAIL_PROVIDER', 'smtp').lower()
+    
+    # Get sender information
+    from_email = os.environ.get('EMAIL_FROM', os.environ.get('SMTP_USER', 'noreply@remindsender.com'))
+    from_name = os.environ.get('EMAIL_FROM_NAME', 'RemindSender')
+    
+    if email_provider == 'brevo':
+        return await send_email_brevo(to_email, subject, body, from_email, from_name)
+    elif email_provider == 'smtp':
+        return await send_email_smtp(to_email, subject, body, from_email)
+    else:
+        logger.error(f"Unknown email provider: {email_provider}. Using SMTP as fallback.")
+        return await send_email_smtp(to_email, subject, body, from_email)
 
 
 def format_date_spanish(event_date: datetime, user_timezone: str = "America/Bogota") -> str:
