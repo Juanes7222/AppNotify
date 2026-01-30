@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getEvents, createEvent, updateEvent, deleteEvent, getContacts, addSubscription } from '../lib/api';
+import { getEvents, createEvent, updateEvent, deleteEvent, getContacts, addSubscription, removeSubscription, getEventSubscriptions } from '../lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -129,14 +129,14 @@ const EventCard = ({ event, onEdit, onDelete }) => {
   );
 };
 
-const EventForm = ({ event, onSubmit, onClose, loading, contacts }) => {
+const EventForm = ({ event, onSubmit, onClose, loading, contacts, existingSubscriptions }) => {
   const [formData, setFormData] = useState({
     title: event?.title || '',
     description: event?.description || '',
     event_date: event?.event_date ? parseISO(event.event_date) : new Date(),
     location: event?.location || '',
     reminder_intervals: event?.reminder_intervals || [],
-    selectedContacts: [], // Nuevos contactos seleccionados
+    selectedContacts: existingSubscriptions || [], // Contactos ya suscritos o nuevos
   });
   const [time, setTime] = useState(
     event?.event_date 
@@ -388,10 +388,10 @@ const EventForm = ({ event, onSubmit, onClose, loading, contacts }) => {
       </div>
 
       {/* Selector de contactos */}
-      {!event && contacts && contacts.length > 0 && (
+      {contacts && contacts.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <Label>Contactos a notificar</Label>
+            <Label>Contactos a notificar {event && <span className="text-xs text-muted-foreground">(se agregarán/removerán al guardar)</span>}</Label>
             <Badge variant="secondary">
               {formData.selectedContacts.length} seleccionados
             </Badge>
@@ -472,6 +472,7 @@ const EventsPage = () => {
   const [formLoading, setFormLoading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
+  const [existingSubscriptions, setExistingSubscriptions] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
 
   const fetchEvents = async () => {
@@ -536,9 +537,50 @@ const EventsPage = () => {
     try {
       const { selectedContacts, ...eventData } = data;
       await updateEvent(editingEvent.id, eventData);
-      toast.success('Evento actualizado correctamente');
+      
+      // Gestionar suscripciones
+      if (selectedContacts) {
+        // Obtener suscriptores actuales
+        const currentSubsResponse = await getEventSubscriptions(editingEvent.id);
+        const currentSubscribers = currentSubsResponse.data.map(sub => sub.contact_id);
+        
+        // Determinar quién agregar y quién remover
+        const toAdd = selectedContacts.filter(id => !currentSubscribers.includes(id));
+        const toRemove = currentSubscribers.filter(id => !selectedContacts.includes(id));
+        
+        // Agregar nuevos suscriptores
+        for (const contactId of toAdd) {
+          try {
+            await addSubscription(editingEvent.id, contactId);
+          } catch (err) {
+            console.error(`Error subscribing contact ${contactId}:`, err);
+          }
+        }
+        
+        // Remover suscriptores
+        for (const contactId of toRemove) {
+          try {
+            const subToRemove = currentSubsResponse.data.find(sub => sub.contact_id === contactId);
+            if (subToRemove) {
+              await removeSubscription(editingEvent.id, subToRemove.id);
+            }
+          } catch (err) {
+            console.error(`Error removing subscription for contact ${contactId}:`, err);
+          }
+        }
+        
+        if (toAdd.length > 0 || toRemove.length > 0) {
+          toast.success(`Evento actualizado (${toAdd.length} agregados, ${toRemove.length} removidos)`);
+        } else {
+          toast.success('Evento actualizado correctamente');
+        }
+      } else {
+        toast.success('Evento actualizado correctamente');
+      }
+      
       setSheetOpen(false);
       setEditingEvent(null);
+      setExistingSubscriptions([]);
       fetchEvents();
     } catch (error) {
       console.error('Error updating event:', error);
@@ -561,14 +603,26 @@ const EventsPage = () => {
     }
   };
 
-  const handleEdit = (event) => {
+  const handleEdit = async (event) => {
     setEditingEvent(event);
+    
+    // Cargar suscriptores existentes
+    try {
+      const subsResponse = await getEventSubscriptions(event.id);
+      const subscriberIds = subsResponse.data.map(sub => sub.contact_id);
+      setExistingSubscriptions(subscriberIds);
+    } catch (error) {
+      console.error('Error loading subscriptions:', error);
+      setExistingSubscriptions([]);
+    }
+    
     setSheetOpen(true);
   };
 
   const handleCloseSheet = () => {
     setSheetOpen(false);
     setEditingEvent(null);
+    setExistingSubscriptions([]);
   };
 
   const filteredEvents = events.filter(event =>
@@ -619,6 +673,7 @@ const EventsPage = () => {
                 onClose={handleCloseSheet}
                 loading={formLoading}
                 contacts={contacts}
+                existingSubscriptions={existingSubscriptions}
               />
             </div>
           </SheetContent>
