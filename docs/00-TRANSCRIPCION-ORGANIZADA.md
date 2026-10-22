@@ -143,7 +143,7 @@ Cada verificación debe ser **extensible al ciclo PHVA** (Planear · Hacer · Ve
 
 - **Prohibido** el uso de exposiciones teóricas, lecturas extensas de diapositivas o introducciones conceptuales sobre el significado del control. Si se hace, la exposición se detiene de inmediato. (P2 L117, PDF p7)
 - **Si se requiere tiempo adicional** por complejidad de los laboratorios, debe **comunicarse formalmente y con anticipación** a la docente para que evalúe la viabilidad. "No va a ser excusa que es que no les dio el tiempo." (PDF p7, P2 L124–L134)
-- **Modalidades**: **A** grabación de video + sustentación en vivo de conclusiones (bloque 3 en vivo) · **B** exposición práctica en vivo y directo · **C** **mixta** — exposición técnica en vivo apoyada en evidencias previamente recopiladas (videos, capturas, logs, reportes). *La docente代理机构 prefiere C por ser la más utilizada y la más práctica.* (PDF p8, P2 L170–L173)
+- **Modalidades**: **A** grabación de video + sustentación en vivo de conclusiones (bloque 3 en vivo) · **B** exposición práctica en vivo y directo · **C** **mixta** — exposición técnica en vivo apoyada en evidencias previamente recopiladas (videos, capturas, logs, reportes). *La docente prefiere la C por ser la más utilizada y la más práctica.* (PDF p8, P2 L170–L173)
 - **Plan B**: si hay riesgo de corte de internet/fluido, grabar la exposición. Al día siguiente, las conclusiones y las preguntas se hacen en vivo. (P2 L288)
 
 ---
@@ -257,7 +257,7 @@ Agrupaciones de la fila 1 (técnicas): B–C *Observación* · E–G *Revisión 
 | A.5.17 | Información de autenticación | Protección de la información de autenticación (secretos, tokens, credenciales). |
 | A.5.18 | Derechos de acceso | Asignación y revisión de derechos de acceso por rol/función. |
 | A.8.2 | Derechos de acceso privilegiado | Cuentas privilegiadas, segregación, elevación controlada. |
-| A.8.3 | Restricción de acceso a la información | Aislamiento de la información por propietario/clasificación; control de，它的 acceso. |
+| A.8.3 | Restricción de acceso a la información | Aislamiento de la información por propietario/clasificación; control de su acceso. |
 | A.8.4 | Acceso al código fuente | Gestión del acceso de lectura/escritura al código y a las herramientas de desarrollo. |
 | A.8.5 | Autenticación segura | MFA, gestión de sesiones, bloqueo por intentos fallidos, resistencia a fuerza bruta. |
 | A.8.18 | Uso de programas utilitarios privilegiados | Restricción de utilidades que anulan controles o elevan privilegios. |

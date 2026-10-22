@@ -126,7 +126,7 @@ La profesora dijo: *"normalmente los estudiantes se confunden y creen que el eje
 
 Un NC nunca queda como "no se encontró nada" — se demuestra **que se encontró algo que no debía existir**.
 
-### 2.4 Prueba de fuego con dos actores (el escenario de la profesora,初二)
+### 2.4 Prueba de fuego con dos actores (el escenario de la profesora)
 
 La profesora describió la prueba del lugar con **dos personas: una distrae al guardia y la otra entra**. En acceso lógico hay un análogo exacto, y es más potente que el caso físico porque el guardia distraído es **otro usuario legítimo haciendo su trabajo mientras el atacante actúa**.
 
@@ -150,7 +150,7 @@ Y en paralelo, **U-01 (`admin_org`) ejecuta la fuerza bruta** contra la cuenta d
 
 - **Si un CONFORME se rompe** (el ataque tiene éxito donde no debería): el hallazgo **cambia a NC**, sin discusión. Es el criterio, no la expectativa. Se actualiza la matriz y se repacta ese control.
 - **Si un NC se comporta bien** (el ataque falla): se **documenta el NC** con la evidencia de configuración y se reasigna el NC a otro ítem plantado. Por eso hay 4 OM y 2 NC de margen, y por eso el pacto del Día 2 fija los ítems plantados.
-- **Si una prueba sale ambigua** (ni的成功 ni el fallo es concluyente): **no se dictamina**. Se repite, se amplía la muestra de ese ítem, o se declara la limitación en las conclusiones — que la profesora，Pide explícitamente ("limitaciones de la evaluación").
+- **Si una prueba sale ambigua** (ni el éxito ni el fallo es concluyente): **no se dictamina**. Se repite, se amplía la muestra de ese ítem, o se declara la limitación en las conclusiones — que la profesora，Pide explícitamente ("limitaciones de la evaluación").
 
 > **En ningún caso se ajusta el criterio de aceptación después de ver el resultado.** El criterio se escribe en F2 y se congela. Si el criterio estaba mal, se corrige la norma y se **re-audita el ítem completo**, se documenta el cambio, y se vuelve a medir.
 
